@@ -89,8 +89,8 @@ tutor          (id text PK,               -- natural key from tutors.csv ("T1", 
 room           (id text PK,               -- "R1".."R6" — seeded even though the export only uses R1-R3
                 name)
 
-student        (id uuid PK,               -- no student id in the export; app generates one, dedupes by name
-                name text UNIQUE)
+student        (id uuid PK,               -- no student id in the export
+                name text)                -- not unique — a name isn't an identity; see below
 
 lesson         (id uuid PK,
                 tutor_id FK, room_id FK,
@@ -114,6 +114,8 @@ legacy_conflict (id PK, legacy_ref text, reason text, raw_row jsonb, created_at)
 ```
 
 `lesson_student` carries its own copy of `starts_at/ends_at/status` because a Postgres `EXCLUDE` constraint needs the range column on the same table as the column it excludes on, and `student_id` only exists on `lesson_student` — `starts_at/ends_at` live on `lesson`. The app keeps the copy in sync on every `create`/`move`/`cancel`/`no-show`, inside the same transaction as the write to `lesson`. This is a real weakness (two sources of truth for one time range) — see Reflection.
+
+`POST /lessons` takes `studentIds`, never names — the live API does not resolve a student by matching text. The only place a name is ever used to find/create a student is inside the seed script, as a one-time, self-contained step to reconstruct history from an export that has no student id (it's how findings A and C get caught at all). That heuristic never runs outside seeding.
 
 The exclusion predicate on all three constraints is `WHERE (status <> 'cancelled')`, not `status = 'booked'`. The brief is explicit that a no-show "frees neither" the room nor the slot — only a cancellation does — so a no-show lesson must still count as occupying its tutor/room/student for conflict purposes.
 
@@ -139,7 +141,7 @@ The export itself has no `created_at`, so seeding does **not** fabricate a `crea
 
 ```
 POST   /lessons                 { tutorId, roomId, startsAt, durationMin (60|90),
-                                   kind ('single'|'exam_pair'), studentNames: string[], note? }
+                                   kind ('single'|'exam_pair'), studentIds: string[], note? }
                                  → 201 { id, tutorId, roomId, startsAt, endsAt, kind, status, studentNames }
                                  → 409 { error: "CONFLICT", reason: "tutor"|"room"|"student", clashingLessonId }
 

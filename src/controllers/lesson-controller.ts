@@ -9,12 +9,12 @@ const createLessonSchema = z
     startsAt: z.string().datetime({ offset: true }),
     durationMin: z.union([z.literal(60), z.literal(90)]),
     kind: z.enum(['single', 'exam_pair']).default('single'),
-    studentNames: z.array(z.string().min(1)).min(1),
+    studentIds: z.array(z.string().uuid()).min(1),
     note: z.string().min(1).optional(),
   })
-  .refine((data) => (data.kind === 'single' ? data.studentNames.length === 1 : data.studentNames.length >= 2), {
+  .refine((data) => (data.kind === 'single' ? data.studentIds.length === 1 : data.studentIds.length >= 2), {
     message: 'single needs exactly 1 student; exam_pair needs at least 2',
-    path: ['studentNames'],
+    path: ['studentIds'],
   });
 
 export async function create(req: Request, res: Response, next: NextFunction) {
@@ -26,7 +26,7 @@ export async function create(req: Request, res: Response, next: NextFunction) {
       startsAt: new Date(body.startsAt),
       durationMin: body.durationMin,
       kind: body.kind,
-      studentNames: body.studentNames,
+      studentIds: body.studentIds,
       note: body.note ?? null,
     });
     res.status(201).json(result);

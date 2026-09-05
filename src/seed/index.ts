@@ -7,7 +7,7 @@ import { isAfterCutoff } from '../lib/cutoff';
 import { isExclusionViolation, reasonFromConstraint } from '../lib/errors';
 import { readTutors, readLessons, type RawLessonRow } from './csv';
 
-const ROOM_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6'];
+const ROOM_IDS = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6']; // brief: six rooms. Data only uses R1-R3 — seed all six anyway.
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
 interface LessonGroup {
@@ -28,6 +28,10 @@ function toStartsAt(date: string, startTime: string): Date {
   return new Date(`${date}T${startTime}:00+07:00`);
 }
 
+// Heuristic agreed with dev: rows sharing tutor/room/start time, where every note in the
+// group mentions "exam pair", are one exam_pair lesson with several students — not a
+// tutor/room double-booking. Anything else stays a single lesson (including real
+// double-bookings like L007/L008, which share a student but not a room).
 function groupExamPairs(rows: RawLessonRow[]): RawLessonRow[][] {
   const byKey = new Map<string, RawLessonRow[]>();
   for (const row of rows) {
@@ -70,6 +74,12 @@ function toLessonGroup(rows: RawLessonRow[]): LessonGroup {
   };
 }
 
+// Matching by name is a seed-only heuristic: the export has no student id, and name is
+// the only signal available to tell that "Le Minh Chau" in L001 and L007 is the same
+// person (needed to reproduce findings A/C). It lives here, not in a shared repository —
+// the live API never resolves a student by name, only by the id the caller already has.
+// No UNIQUE constraint backs this (a name isn't a real identity), so it's a plain
+// select-then-insert; the seed runs single-threaded, so there's no race to guard against.
 async function getOrCreateStudent(client: PoolClient, name: string): Promise<string> {
   const existing = await client.query<{ id: string }>('SELECT id FROM student WHERE name = $1', [name]);
   if (existing.rows[0]) return existing.rows[0].id;
@@ -114,6 +124,10 @@ async function insertGroup(group: LessonGroup): Promise<SeedOutcome> {
         );
       }
 
+      // The export has no created_at, so we don't know when these historical rows were
+      // first booked — no fabricated 'created' event. cancelled_at IS real data, so a
+      // cancelled row gets one honest 'cancelled' event, computed the same way a live
+      // cancel would be.
       if (group.status === 'cancelled' && group.cancelledAt) {
         const afterCutoff = isAfterCutoff(group.startsAt, group.cancelledAt);
         const before = { tutorId: group.tutorId, roomId: group.roomId, status: 'booked' };
@@ -137,6 +151,9 @@ async function insertGroup(group: LessonGroup): Promise<SeedOutcome> {
   }
 }
 
+// Cap 6/tutor/day and closed-on-Monday are not enforced anywhere in the API (Phase 02) —
+// they only show up here, informationally, so the report can point at exactly what's
+// still broken in the real data without the seed itself blocking on it.
 function reportUnenforcedRuleBreaks(rows: RawLessonRow[]): string[] {
   const lines: string[] = [];
   const byTutorDate = new Map<string, number>();

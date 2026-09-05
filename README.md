@@ -33,16 +33,18 @@ rule breaks not enforced by the API (informational only):
 
 ## Try it
 
+`studentIds` are real ids — the API never looks a student up by name (only the seed script does that, once, to load the export). List seeded ids with `SELECT id, name FROM student;` if you want to try your own.
+
 ```bash
-# 201 — free slot
+# 201 — free slot, an existing seeded student ("Le Minh Chau")
 curl -s http://localhost:3000/lessons -X POST -H 'Content-Type: application/json' \
-  -d '{"tutorId":"T2","roomId":"R4","startsAt":"2026-03-11T09:00:00+07:00","durationMin":60,"studentNames":["Nguyen Van A"]}'
-# {"id":"e7a24e07-9958-4a1f-a6b7-19d177949767","tutorId":"T2","roomId":"R4","startsAt":"2026-03-11T02:00:00.000Z","endsAt":"2026-03-11T03:00:00.000Z","kind":"single","status":"booked","studentNames":["Nguyen Van A"]}
+  -d '{"tutorId":"T2","roomId":"R4","startsAt":"2026-03-11T09:00:00+07:00","durationMin":60,"studentIds":["7c22f1ab-ead3-4e6f-83c5-45fcb0c944bf"]}'
+# {"id":"f17409c4-be25-49c8-a636-ddbe708f22c8","tutorId":"T2","roomId":"R4","startsAt":"2026-03-11T02:00:00.000Z","endsAt":"2026-03-11T03:00:00.000Z","kind":"single","status":"booked","studentIds":["7c22f1ab-ead3-4e6f-83c5-45fcb0c944bf"]}
 # HTTP 201
 
 # 409 — same student already booked elsewhere at that time (L007)
 curl -s http://localhost:3000/lessons -X POST -H 'Content-Type: application/json' \
-  -d '{"tutorId":"T2","roomId":"R2","startsAt":"2026-03-04T09:00:00+07:00","durationMin":60,"studentNames":["Le Minh Chau"]}'
-# {"error":"CONFLICT","reason":"student","clashingLessonId":"f9fa4442-2f2a-41b1-b8c8-c403a1ac6542"}
+  -d '{"tutorId":"T2","roomId":"R2","startsAt":"2026-03-04T09:00:00+07:00","durationMin":60,"studentIds":["7c22f1ab-ead3-4e6f-83c5-45fcb0c944bf"]}'
+# {"error":"CONFLICT","reason":"student","clashingLessonId":"6bddc27e-0af0-4ced-9a82-e9be87148c00"}
 # HTTP 409
 ```
