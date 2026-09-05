@@ -1,6 +1,6 @@
 # DECISIONS
 
-Time used: __h__m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
+Time used: 2h30m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
 
 ## 1. Reading the situation
 
@@ -166,4 +166,30 @@ A generic patch — "change any field on a lesson" — was the obvious alternati
 
 ## 4. Reflection
 
-*(pending — Phase 04)*
+### Next week
+
+- Change-aware daily schedule (feature #2): diff current `lesson` state against what `lesson_event` says was known as of the last cut-off, so a tutor sees exactly what changed since they were last told.
+- A real way to create/look up a student. `POST /lessons` already takes `studentId`, but nothing creates one except the seed script — there's no student-management endpoint yet.
+- An owner decision on cap 6/tutor/day, closed-on-Monday, and late-cancel billing (hard block vs. logged override), then enforce whichever way they pick.
+- A committed automated test suite (written to be defensible in the interview), plus CI.
+
+### What is weak
+
+- Seed matches students by name (the only signal in the export with no student id) to recognise repeat appearances — a one-time heuristic that lives only in the seed script and never runs against live traffic (`POST /lessons` takes `studentId`, never a name). Residual risk: if two real students in the source data happen to share a name, seeding can't tell them apart.
+- `lesson_student` denormalizes `starts_at/ends_at/status` from `lesson` so the student-overlap exclusion can exist at all — two sources of truth for one time range, kept in sync by application code on every `move`/`cancel`/`no-show`. A future direct SQL write that forgets the sync would silently weaken the guarantee.
+- The `tutor`/`room`/`student` conflict `reason` is derived by substring-matching the Postgres constraint name (`err.constraint.includes('tutor')`) — fragile if a constraint is ever renamed.
+- Cap 6/tutor/day, closed-on-Monday, and late-cancel billing are visible only in the seed report — not enforced or even warned live. The real data already breaks both, and nothing running today stops it from getting worse.
+- No automated test suite ships in this repo (see "suggestion I threw away" below) — the six required scenarios were hand-verified, but nothing guards against regression.
+- Historical lessons loaded from the export carry only a `cancelled` event (only where `cancelled_at` was real data) — there's no `created`/`moved` event for the past, since the export has no timestamp for it. The event log is complete from the first live API call onward, not before.
+
+### Where my AI assistant helped
+
+- Wrote the `EXCLUDE USING gist` constraints — including the `status <> 'cancelled'` predicate, needed because a no-show must keep occupying its slot — and the hand-written `schema.sql` migration.
+- Worked through the tutor/room vs. student overlap design fork and implemented it: denormalizing `lesson_student` so all three dimensions get the same DB-level guarantee, instead of a weaker application-level check for students only.
+- Wrote the seed loader: parses both CSVs, merges `L009`+`L010` into one `exam_pair` lesson via a heuristic (same tutor, room, and start time, with a note mentioning "exam pair"), inserts each lesson in its own transaction, and — when the exclusion constraint rejects a row (`23P01`) — catches it, records it in `legacy_conflict` with the reason and the raw CSV row, and keeps going instead of crashing or silently skipping it.
+- Built the layered API (routes → controllers → services → repositories) and the `23P01` → `409` error mapping.
+- Caught and fixed a real design mistake before it shipped: the live API originally took `studentNames` and resolved-or-created a student by matching text, which would silently merge two different people who share a name. Moved to `studentId` end-to-end for the live API and deleted the name-matching code from it — the heuristic now only exists inside the seed script.
+
+### A suggestion I threw away
+
+My AI assistant wrote a complete Vitest + supertest suite covering all six required scenarios, and it passed 6/6 against the seeded database. I had it deleted before submitting — not because it was wrong, but because the brief is explicit that I should "submit only code you understand and could have written yourself," and a test I didn't write isn't one I can defend line-by-line in the interview. I used its passing run to confirm the feature actually works, then write my own test suite separately.
