@@ -1,0 +1,46 @@
+{
+  "name": "tutoring_scheduling",
+  "version": "1.0.0",
+  "description": "Online Technical Assessment of SynergieGlobal",
+  "private": true,
+  "main": "src/server.ts",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "migrate": "docker compose exec -T postgres psql -U postgres -d tutoring_scheduling -f - < db/schema.sql",
+    "seed": "tsx src/seed/index.ts",
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "csv-parse": "^5.6.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LuongNhanKiet2020/tutoring_scheduling.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/LuongNhanKiet2020/tutoring_scheduling/issues"
+  },
+  "homepage": "https://github.com/LuongNhanKiet2020/tutoring_scheduling#readme"
+}
