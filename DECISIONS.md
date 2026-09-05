@@ -4,192 +4,137 @@ Time used: 2h30m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
 
 ## 1. Reading the situation
 
-### Questions for the owner (and what each answer changes)
+### Questions for the owner
 
-| Question (with evidence) | If A → | If B → |
-|---|---|---|
-| **Exam pair** — is a session with 2 students/1 tutor/1 room one lesson or two? Evidence: Mai — *"In exam season I put two students with one tutor in the same room and the same slot, on purpose... I do that most weeks"*; data L009+L010, note *"exam pair - half price"*. | **A: one lesson, multiple students** → `lesson` has many `lesson_student` rows; room/tutor exclusion applies at the lesson level, so the pair never trips it. | **B: two separate lessons** → needs a `pair_group_id` + a conditional exclusion (more fragile). |
-| **Tutor-initiated cancellation** — is the family charged, is the tutor paid? Evidence: L017, `cancelled_at 2026-03-05T14:40:00+07:00`, note *"tutor sick"*, 1h20 before the 16:00 start; the brief's rule only covers *"A family may cancel free of charge up to 4 hours before..."* | **A: no charge / pay rules differ** → need `cancelled_by` (family / tutor / centre) so tutor-initiated cancels skip the family late-fee logic. | **B: treat the same as a family cancel** → no `cancelled_by`, one shared logic. |
-| **6-bookings/day cap** — hard block or override with a reason? Evidence: *"Mai breaks this rule when she is desperate, and the owner wants it enforced"*; data shows T1 with **7 bookings on 2026-03-06** (09:00, 11:30, 13:00, 16:00, 17:30, 19:00, 20:30) against the rule *"No tutor may be given more than 6 bookings in a single day."* | **A: hard cap** → DB trigger/constraint blocks the 7th booking. | **B: override with reason** → app-level check + `override_reason`, logged, not blocked. |
-| **Monday exceptions** — does the centre ever teach on Monday, and who decides? Evidence: L032, `2026-03-09` (Monday) `10:00`, note *"moved from Sunday at the family's request"*, against *"The centre teaches Tuesday to Sunday. It is closed on Monday."* | **A: never** → CHECK constraint blocks any Monday insert. | **B: sometimes, by exception** → warning only, not blocked. |
-| **Notification channel after cut-off** — does the tool only need to *show* a change, or does it have to *push* it? Evidence: tutor — *"I get my day in a message, then a correction, then sometimes a third message. I do not always know which one is real"* and *"I have driven in for a lesson that was called off the night before. Twice."* | **A: show only** → tool is the source of truth, tutor checks it themselves; no messaging integration. | **B: must push (WhatsApp/SMS)** → out of scope for 2h30, must be named as "left broken." |
-| **Who is the actual user** — Mai only, or do tutors/owner log in too? Evidence: *"Mai... is the only person who fully understands the sheet, and she goes on leave in eight weeks"*; owner — *"I want to open the laptop and see today. Not scroll. See it."* | **A: Mai only** → no auth/roles needed. | **B: multiple roles** → auth/permissions, out of scope for 2h30. |
+1. **Exam pair**: Mai pairs 2 students into 1 session for half price during exam season — treat this as one session with 2 students, or split it into two separate sessions to keep the "one-to-one" rule intact?
+2. **Tutor-initiated cancellation**: when the tutor cancels (like the sick-day case), is the family charged, is the tutor paid?
+3. **6-bookings/day cap**: Mai has broken this rule before when she had to (one tutor has 7 bookings in a day in the data) — hard block from now on, or allow going over it with a logged reason?
+4. **Teaching on Monday**: does the centre ever teach on Monday (like the reschedule-for-a-family case), or is it an absolute no?
+5. **Notifying the tutor after the 16:00 cut-off**: does the system only need to show the right thing when the tutor checks, or does it have to actively push a message to them?
+6. **Who uses the system**: just Mai, or do tutors/the owner also need to log in and look?
 
 ### Where the brief argues with itself
 
-1. *"Lessons are one-to-one, sixty or ninety minutes long"* vs Mai — *"two students with one tutor in the same room and the same slot, on purpose... most weeks."* **Reading chosen:** exam pair is a first-class lesson kind (`kind='exam_pair'`) with ≥2 students, not a rare exception.
-2. *"A room holds one lesson at a time, whoever is teaching in it"* vs the exam pair happening *"in the same room and the same slot"* with two students. **Reading chosen:** since exam pair = one lesson (per #1), the room rule still holds — one room, one lesson row, regardless of how many students are on it.
-3. *"No tutor may be given more than 6 bookings"* + owner *"wants it enforced"* vs *"Mai breaks this rule when she is desperate"* and *"closed on Monday"* vs L032 actually running on Monday 2026-03-09. **Reading chosen:** both are aspirational rules, not hard invariants — enforce as a **warning in code**, not a DB block, since the real data already breaks them and we don't yet know if the owner wants a hard stop (see the questions above).
-4. The late-cancellation rule only describes *"a family may cancel"*; it says nothing about a tutor cancelling — yet L017 is tutor-initiated (*"tutor sick"*). **Reading chosen:** add `cancelledBy` (family/tutor/centre) to record the truth, but only apply the family late-fee classification when `cancelledBy = 'family'`.
-5. *"It has 12 tutors on the payroll... Six rooms"* vs the export only containing **3 tutors** (`tutors.csv`: T1–T3) and **3 rooms** (R1–R3 used in `lessons_export.csv`). **Reading chosen:** the export is a slice of a bigger reality — never hard-code tutor/room counts; seed all 6 rooms (R1–R6) per the rule even though the data only touches R1–R3.
+- It says "one-to-one" but Mai deliberately pairs 2 students into 1 session during exam season → treat the pair as one valid session type, not a rare exception.
+- It says "a room holds one lesson at a time" but the exam pair happens in exactly one room, one slot → since the pair counts as one session (with 2 students), it doesn't actually break the room rule.
+- The owner wants the 6/day cap and the Monday closure enforced, but Mai has broken both, and the brief never mentions any bad outcome from that — so is either rule actually load-bearing, or just friction? → don't enforce either in this system yet; just surface that they're being broken in the seed report, and let the owner decide whether to make either one a hard rule.
+- The cancellation rule only covers a family cancelling, not a tutor cancelling (the data has one tutor-initiated cancel for a sick day) → record who actually cancelled, but don't charge anything (billing was cut from scope entirely).
+- The brief says the centre has 12 tutors / 6 rooms, but the real data only has 3 tutors / 3 rooms → never hard-code tutor/room counts in the code.
 
-### What the export actually shows
+### What the data actually shows
 
-| # | Lesson(s) | Specific finding | Rule it breaks (quoted) |
-|---|---|---|---|
-| A | L007 + L008 | Student "Le Minh Chau" booked at the same 09:00 slot on 2026-03-04 in two places at once: T3/R3 and T2/R2 (L008 note: *"added by phone; family confirmed"*) | *"Twice last term we had a student booked into two places at once... if the system allows it, the system is broken"* |
-| B | L009 + L010 | Same tutor T1, same room R1, same 11:00 slot (90'), two different students, note *"exam pair - half price"* | A deliberate, valid exception per Mai — directly clashes with "one-to-one" and "one lesson per room" if read literally |
-| C | L033 + L034 | Tutor T1 teaching at 09:00 on 2026-03-10 in both R1 (Le Minh Chau) and R2 (Tran Bao Long) simultaneously — no exam-pair note, different rooms | *"a tutor can only be in one room at a time"* |
-| D | L021–L027 | Tutor T1 has **7 bookings** on 2026-03-06 (09:00, 11:30, 13:00, 16:00, 17:30, 19:00, 20:30) | *"No tutor may be given more than 6 bookings in a single day"* |
-| E | L032 | Lesson runs at 10:00 on Monday 2026-03-09, note *"moved from Sunday at the family's request"* | *"The centre teaches Tuesday to Sunday. It is closed on Monday"* |
-| F | L017 | Cancelled at 14:40 on 2026-03-05 (note *"tutor sick"*), 1h20 before the 16:00 start — inside the 4h window, but the canceller is the tutor, not the family | *"A family may cancel free of charge up to 4 hours before... Inside that window the lesson is charged in full and the tutor is still paid"* — rule is silent on tutor-initiated cancels |
-| G | L005 | Cancelled at 08:15 on 2026-03-03 for a 14:00 lesson (5h45 notice, so free by the 4h rule) — but the cut-off for that lesson was 16:00 the day before (2026-03-02) | *"Tomorrow's schedule is final at 16:00 today. Changes after the cut-off still happen, but they must be visible as changes"* — this is a free cancel that still lands after its own cut-off |
+- **L007+L008**: one student booked into two different places at the same time (two tutors, two rooms).
+- **L009+L010**: two students sharing one tutor, one room, one slot — Mai's deliberate exam-pair booking.
+- **L033+L034**: one tutor booked to teach in two different rooms at the same time.
+- **L021–L027**: one tutor has 7 bookings in a single day (over the 6 cap).
+- **L032**: a lesson runs on a Monday (the day the centre is closed).
+- **L017**: the tutor cancels a lesson 1h20 before it starts, for being sick.
+- **L005**: the family cancels within the rule (more than 4 hours' notice), but the cancellation itself happens after the previous day's 16:00 cut-off.
 
 ### Assumptions
 
-- **Today pinned to 2026-03-05** (Thursday) — sits mid-week in the seed range, already has a same-day cancel (L017) and the overloaded tutor day (2026-03-06) needed to demo cut-off and late-cancel without inventing data.
-- Timezone fixed to **Asia/Ho_Chi_Minh (+07:00)**; every timestamp column stored as `timestamptz` — every timestamp in the export already carries `+07:00` (e.g. `cancelled_at 2026-03-03T08:15:00+07:00`).
-- Students are identified **by name only** — README.txt never mentions a student id; a `student` table dedupes by name at seed time. Flagged as a known weakness.
-- Exam pair = **one lesson with ≥2 students**, not two lessons (see contradictions #1/#2) — keeps the room/tutor exclusion constraint intact with no special case.
-- Tool is **single-user (Mai)** — *"Mai... is the only person who fully understands the sheet"* — no auth/roles built (pending confirmation from the owner).
-- Tool **never sends messages** — it's a source of truth to look at; Mai still relays it manually. Named as "left broken" (pending confirmation from the owner).
-- The 16:00 cut-off applies to lessons from the next day onward; a change made the same day as the lesson is always "past cut-off" (its cut-off was already yesterday).
-- Seed loads **all 34 rows**, including rule-breaking ones, since this is real history. Any row rejected by the exclusion constraint (`23P01`) is flagged into a separate table and reported — never silently dropped, never crashes. The constraint only blocks *new* writes through the API, not historical seed rows.
-- The export has **no `created_at`/`updated_at`**, and L008's *"added by phone"* note carries no timestamp — there's no way to know if it was added before or after that day's cut-off. This is exactly why future changes (post-launch) are tracked via `lesson_event.occurredAt` instead of trying to reconstruct it from the export — the reason `lesson_event` exists (carried forward to Phase 3 design).
-- A **no-show** (`status=no_show`, no `cancelled_at`, e.g. L015) frees neither the room nor the slot — this matches the rule *"a student who simply does not arrive is a no-show, which frees neither"*; it is not a violation, just a status the code must classify correctly.
+- "Today" is pinned to 2026-03-05 (it's inside the sample week's CSV data).
+- Time is fixed to Vietnam's timezone (+7), no daylight-saving changes.
+- Students only have a name, no id of their own — two people can share a name. Handled by generating a random UUID per student and, by default, treating a name match as the same person.
+- An exam pair counts as one session with 2 students, not two separate sessions.
+- Only Mai uses the system — no login needed.
+- The system never sends a message to anyone by itself — it's only a place to look things up.
+- Any change made today, or after yesterday's cut-off, counts as a "post-cut-off change."
+- All historical data is loaded, including sessions that break a rule — those are only flagged, never dropped or silently skipped; the rules only apply going forward, to newly-created sessions.
+- The original data has no record of when a session was actually created, so there's no way to know which past sessions were added before or after their cut-off — going forward, the system records this fully for every new session.
+- A "student didn't show up" (no-show) session doesn't count as cancelled, no matter whether there was any notice — the room and the slot are still considered in use.
 
 ## 2. What to build
 
-### Features this tool needs
+### What this tool could do (pick exactly one)
 
-| # | Feature | Who hurts | Why it can wait |
-|---|---|---|---|
-| 1 | **Conflict-safe lesson booking** (create/move blocked by the database on a tutor/room/student clash; cancel/no-show to prove slots free correctly) | Owner — *"if the system allows it, the system is broken"*; tutor double-booked on 2026-03-10 (finding C) | — (this is the one) |
-| 2 | Change-aware daily schedule (diff against what was published at the 16:00 cut-off) | Tutor — *"I do not always know which one is real"* | Needs a correct lesson/event model first — built by #1 |
-| 3 | Full cancellation flow with real billing (late fee charged, tutor paid) | Mai — *"Cancellations are the worst part"* | No real billing data exists; #1 already covers enough cancel behaviour to prove a slot frees |
-| 4 | Tutor daily load cap (≤6), enforced or overridable | Owner wants it enforced, but T1 already has **7 bookings on 2026-03-06** | Needs an owner decision first (Q3, Phase 1) — hard-block vs override |
-| 5 | "See today" board — one screen the owner can open | Owner — *"I want to open the laptop and see today. Not scroll. See it."* | Read-only view — doesn't make any rule harder to break, just faster than the spreadsheet |
-| 6 | Freed-slot notification / waitlist on cancel | Mai — *"tries to remember to tell the tutor's next family that a slot has opened up"* | No waitlist data; out of scope for 2h30 |
-| 7 | Spreadsheet import (seed loader + violation report) | Needed because Mai *"goes on leave in eight weeks"* and is the only one who understands the sheet | Not "the one feature" — it's the precondition for demonstrating any of the others |
+1. **Block double-booked schedules** (tutor/room/student) when creating or moving a session — **this is the one I built**.
+2. Show a tutor how their schedule differs from what they were told at the last cut-off — later; needs session history to exist first.
+3. Handle cancellations fully, with real billing — later; there's no real billing data to work with.
+4. Enforce the 6-bookings/day cap, allow going over with a logged reason — later; needs an owner decision first.
+5. A "today" screen for the owner — later; it's just a faster look, it doesn't reduce the risk of double-booking at all.
+6. Tell Mai which slot just opened up after a cancellation — later; there's no waitlist data to work from.
+7. Load the old data from the original spreadsheet — mandatory groundwork, needed to test anything else at all.
 
-### The one I build: Conflict-safe lesson booking
+### Why #1
 
-1. The owner sets the highest bar for it: *"That can never happen again — if the system allows it, the system is broken."* Every other feature is "nice"; this one is "must."
-2. The data proves it's already happening: finding A (student booked in two places at once) and C (tutor teaching in two rooms at once) both occur within the one week of export — not a hypothetical.
-3. This is something the spreadsheet + WhatsApp cannot do **by nature** — "see today" (#5) and a smoother cancellation UI (#3) the spreadsheet can still do, just slower; a database-level exclusion is a difference in kind, not speed.
-4. It fits inside 2h30: one exclusion constraint set + the seed loader (required regardless) + 4 endpoints (create/move/cancel/no-show) + a handful of tests. Demonstrable directly against real data: re-POST L008 → `409`.
-5. The data model behind it (`lesson`, `lesson_student`, `lesson_event`) is the foundation every other feature (#2, #3, #4) would need — choosing it means choosing the right schema before anything else gets built.
+This is exactly what the owner is most afraid of, and it has already happened for real (two students double-booked last term). The data proves it's happening right now, in the sample week itself (L007+L008, L033+L034). This is something a spreadsheet or a text message can never do, but software can. It fits inside 2h30. And building it right lays the groundwork (the session data itself) for everything else on this list.
 
-### What I leave broken
+### What I leave broken by choosing this
 
-- Tutors still get their day via a message Mai types by hand — *"which message is real"* (tutor) is **not solved**; only the data model (`lesson_event`) is prepared so feature #2 could be built on top without a schema change.
-- **Cap 6/tutor/day and closed-on-Monday: not enforced, not even warned in the API.** The seed report shows they are broken today (T1 has 7 bookings on 2026-03-06, L032 runs on Monday) — they need an owner decision first (Q3, Q4 in Phase 1) before choosing hard-block vs override.
-- **Late-cancel classification and billing (`late`, `chargeFamily`, `payTutor`): cut entirely from the API.** Cancel only sets `status`, `cancelledAt`, and writes the event.
-- Waitlist / freed-slot notification: untouched.
-- The "see today" board the owner explicitly asked for: not built. There's a `GET /lessons/:id/history` for one lesson's own timeline, not a whole-day view — deliberately not a "schedule" endpoint so it doesn't slide into feature #5.
+- Tutors still get their schedule through a hand-typed message — "which message is real" is still unsolved.
+- The 6-bookings/day cap and the Monday closure: not blocked, not even warned about, live in the system.
+- No late-cancellation billing.
+- No waitlist for freed-up slots.
+- No schedule screen — only one API to look back at a single session's history.
 
 ## 3. Design
 
-### Data model
+### What gets stored
 
 ```
-tutor          (id text PK,               -- natural key from tutors.csv ("T1", "T2", ...)
-                name, subject, phone)
-
-room           (id text PK,               -- "R1".."R6" — seeded even though the export only uses R1-R3
-                name)
-
-student        (id uuid PK,               -- no student id in the export
-                name text)                -- not unique — a name isn't an identity; see below
-
-lesson         (id uuid PK,
-                tutor_id FK, room_id FK,
-                starts_at timestamptz, ends_at timestamptz,
-                kind      enum('single','exam_pair'),
-                status    enum('booked','cancelled','no_show'),
-                cancelled_at timestamptz NULL,
-                note text NULL,
-                legacy_ref text UNIQUE NULL,   -- "L001".. for seeded rows, NULL for API-created lessons
-                created_at, updated_at)
-
-lesson_student (lesson_id FK, student_id FK, PK(lesson_id, student_id),
-                starts_at, ends_at, status)   -- denormalized copy of lesson's own columns — see below
-
-lesson_event   (id PK, lesson_id FK, occurred_at timestamptz,
-                type enum('created','moved','cancelled','no_show'),
-                before jsonb NULL, after jsonb, after_cutoff boolean, actor text)
-
-legacy_conflict (id PK, legacy_ref text, reason text, raw_row jsonb, created_at)
-                -- export rows the exclusion constraints rejected at seed time; report-only, no API reads this
+tutor          — id, name, subject, phone (taken directly from the original file, no new id made up)
+room           — id, name (all six rooms R1-R6, even though the sample data only touches R1-R3)
+student        — a generated id (the original file has none), name (name is not used as an identity key)
+lesson         — id, tutor, room, start/end time, kind (single/exam pair),
+                 status (booked/cancelled/no-show), when cancelled (if any), a note,
+                 the old spreadsheet's row id (if loaded from there)
+lesson_student — links a lesson to its student(s) — an exam pair links one lesson to 2 students;
+                 also carries its own copy of the lesson's time range and status (technical reason below)
+lesson_event   — history: every create/move/cancel logs one row (before — after,
+                 whether it happened after the cut-off, who did it)
+legacy_conflict — old sessions the database rejected while loading (a report, not a feature)
 ```
-
-`lesson_student` carries its own copy of `starts_at/ends_at/status` because a Postgres `EXCLUDE` constraint needs the range column on the same table as the column it excludes on, and `student_id` only exists on `lesson_student` — `starts_at/ends_at` live on `lesson`. The app keeps the copy in sync on every `create`/`move`/`cancel`/`no-show`, inside the same transaction as the write to `lesson`. This is a real weakness (two sources of truth for one time range) — see Reflection.
-
-`POST /lessons` takes `studentIds`, never names — the live API does not resolve a student by matching text. The only place a name is ever used to find/create a student is inside the seed script, as a one-time, self-contained step to reconstruct history from an export that has no student id (it's how findings A and C get caught at all). That heuristic never runs outside seeding.
-
-The exclusion predicate on all three constraints is `WHERE (status <> 'cancelled')`, not `status = 'booked'`. The brief is explicit that a no-show "frees neither" the room nor the slot — only a cancellation does — so a no-show lesson must still count as occupying its tutor/room/student for conflict purposes.
 
 ### How a cancel/move after the tutor was told is represented
 
-`lesson` always holds the *current* state — there is no `DELETE`, and `starts_at`/`room_id`/`tutor_id` are never updated directly except through `move`. Every `create`/`move`/`cancel`/`no-show` appends one `lesson_event` row (`before`/`after` snapshots, `occurred_at`, `actor`) computed via the pinned `now()` — never `new Date()`. `after_cutoff` is `occurred_at > cutoff(lesson.starts_at)`, where `cutoff(D) = (D − 1 day) 16:00 +07:00`.
+A session always holds its latest state — nothing is deleted, and its time/room/tutor is never changed directly except through a dedicated "move." Every create/move/cancel/no-show adds one row to the history, marked with whether it happened **after the previous day's 16:00 cut-off**. That's how "what the tutor was actually told" can be reconstructed later — just read the history back.
 
-The export itself has no `created_at`, so seeding does **not** fabricate a `created` event for the 31 historical rows — there is no honest timestamp to give it. The two rows that do carry a real historical timestamp (`cancelled_at` on L005 and L017) get one real `cancelled` event each at seed time, computed the same way a live cancel would be. From the first API call onward, every lesson has a full, real event trail — this is exactly the gap the brief's "how you represent a booking cancelled/moved after the tutor was told" question is pointing at, and `lesson_event` is built to close it going forward without a schema change (the basis for the change-aware schedule feature named in "next week").
+### What's enforced by the database, what's handled in code
 
-### Rules: database vs code
+- A tutor can't teach two places at once → **enforced by the database** — this must never be wrong, even if two requests land at the exact same moment.
+- A room can't hold two sessions at once → **enforced by the database**, same reasoning.
+- A student can't be in two places at once → **enforced by the database** — this is what the owner cares about most, so it has to be exactly as solid as the two rules above, not weaker.
+- End time must come after start time → **enforced by the database**, cheap and never changes.
+- No deleting a session, no changing its time/room/tutor directly → **handled in code** (there simply is no route that allows it).
+- Marking a change as "after cut-off" → **handled in code**, at the moment it's logged, since it depends on the current date/time and the policy could change later.
+- The 6/day cap, the Monday closure, late-cancellation billing → **not handled anywhere** while the system is running — they only show up in the report from loading the old data.
 
-| Rule | Where | Why |
-|---|---|---|
-| Tutor can't be in two places at once | **DB** — `EXCLUDE USING gist (tutor_id WITH =, tstzrange(starts_at,ends_at) WITH &&) WHERE (status <> 'cancelled')` | Race-safe between two concurrent requests; this is exactly what the spreadsheet can't do |
-| Room holds one lesson at a time | **DB** — same shape, on `room_id` | Same reasoning |
-| Student can't be in two places at once | **DB** — same shape, on `lesson_student.student_id`, against the denormalized range copy | The owner's #1 complaint; enforced with the same strength as tutor/room, not weaker |
-| `ends_at > starts_at` | **DB CHECK** | Cheap, never changes |
-| No `DELETE`; `starts_at`/`room_id`/`tutor_id` only change via `move` | **Code** — the routes simply don't exist | Keeps history honest; could change without touching the schema |
-| `after_cutoff` on `lesson_event` | **Code**, computed from the pinned `now()` at write time | Depends on policy (`now()`, the 16:00 cut-off) rather than being a data invariant |
-| Cap 6/tutor/day, closed-on-Monday, late-cancel billing | **Nowhere in the API** — visible only in the seed report | Cut from scope in Phase 02: the real data already breaks both, and enforcing either needs an owner decision (Q3/Q4, Phase 1) this exercise doesn't have |
+### The API
 
-### API
+- Create a new session — rejected if it clashes on tutor/room/student.
+- Move a session to a new time/room/tutor — same rejection logic.
+- Cancel a session — frees up that slot.
+- Mark a student as a no-show — does not free up the slot.
+- Look at a session's change history.
 
-```
-POST   /lessons                 { tutorId, roomId, startsAt, durationMin (60|90),
-                                   kind ('single'|'exam_pair'), studentIds: string[], note? }
-                                 → 201 { id, tutorId, roomId, startsAt, endsAt, kind, status, studentNames }
-                                 → 409 { error: "CONFLICT", reason: "tutor"|"room"|"student", clashingLessonId }
-
-POST   /lessons/:id/move        { tutorId?, roomId?, startsAt?, durationMin? }  (at least one field)
-                                 → 200 updated lesson | 409 same shape as above
-                                 → 400 { error: "INVALID_STATE" } if the lesson isn't currently 'booked'
-
-POST   /lessons/:id/cancel      → 200 { id, status: 'cancelled', cancelledAt, afterCutoff }
-                                 → 400 { error: "INVALID_STATE" } if not currently 'booked'
-
-POST   /lessons/:id/no-show     → 200 { id, status: 'no_show' }
-                                 → 400 { error: "INVALID_STATE" } if not currently 'booked'
-
-GET    /lessons/:id/history     → 200 [{ id, type, occurredAt, before, after, afterCutoff, actor }, ...]
-```
-
-Exactly these 5 — nothing else. `POST /lessons/:id/no-show` and `GET /lessons/:id/history` earn their place because the test list (and the design question above) can't be demonstrated without them; nothing else made the cut once cap-6/closed-Monday/late-cancel were cut from scope in Phase 02.
-
-### The endpoint I rejected: `PATCH /lessons/:id`
-
-A generic patch — "change any field on a lesson" — was the obvious alternative to separate `move`/`cancel`/`no-show` routes. Rejected because it can't tell a `move` apart from a `cancel` or a typo fix in `note`: the whole point of `lesson_event.type` is to say *what kind of change* happened, and a generic patch collapses that distinction back into "something changed," which is the exact complaint the tutor made about the spreadsheet ("I do not always know which one is real"). Naming the mutation (`move`, `cancel`, `no-show`) is what keeps the event log honest.
+**Not built**: a generic "edit a session" endpoint (letting any field change in one call) — it wouldn't be able to tell "moved" apart from "just fixed a typo in the note," which destroys the whole point of keeping a change history.
 
 ## 4. Reflection
 
 ### Next week
 
-- Change-aware daily schedule (feature #2): diff current `lesson` state against what `lesson_event` says was known as of the last cut-off, so a tutor sees exactly what changed since they were last told.
-- A real way to create/look up a student. `POST /lessons` already takes `studentId`, but nothing creates one except the seed script — there's no student-management endpoint yet.
-- An owner decision on cap 6/tutor/day, closed-on-Monday, and late-cancel billing (hard block vs. logged override), then enforce whichever way they pick.
-- A committed automated test suite (written to be defensible in the interview), plus CI.
+- A screen for the tutor to see how their schedule differs from what they were last told.
+- A real way to create/look up a student — creating a session currently needs an existing student id, but nothing except loading the old data can create one.
+- Get the owner to actually decide on the 6/day cap and the Monday closure, then enforce it exactly the way they choose.
+- Write a real test suite and run it automatically on every code change.
 
-### What is weak
+### What I know is weak
 
-- Seed matches students by name (the only signal in the export with no student id) to recognise repeat appearances — a one-time heuristic that lives only in the seed script and never runs against live traffic (`POST /lessons` takes `studentId`, never a name). Residual risk: if two real students in the source data happen to share a name, seeding can't tell them apart.
-- `lesson_student` denormalizes `starts_at/ends_at/status` from `lesson` so the student-overlap exclusion can exist at all — two sources of truth for one time range, kept in sync by application code on every `move`/`cancel`/`no-show`. A future direct SQL write that forgets the sync would silently weaken the guarantee.
-- The `tutor`/`room`/`student` conflict `reason` is derived by substring-matching the Postgres constraint name (`err.constraint.includes('tutor')`) — fragile if a constraint is ever renamed.
-- Cap 6/tutor/day, closed-on-Monday, and late-cancel billing are visible only in the seed report — not enforced or even warned live. The real data already breaks both, and nothing running today stops it from getting worse.
-- No automated test suite ships in this repo (see "suggestion I threw away" below) — the six required scenarios were hand-verified, but nothing guards against regression.
-- Historical lessons loaded from the export carry only a `cancelled` event (only where `cancelled_at` was real data) — there's no `created`/`moved` event for the past, since the export has no timestamp for it. The event log is complete from the first live API call onward, not before.
+- For a technical Postgres reason, a session's time range is stored in two tables so that student double-booking can be blocked — if some future code change forgets to update both, the block can silently stop working and nobody would notice.
+- Telling apart a tutor/room/student conflict relies on matching the database constraint's name — if that name ever changes, the code that reads it breaks too.
+- The 6/day cap, the Monday closure, and late-cancellation billing: nothing blocks or even warns about them live — the current data already shows the first two being broken for real.
+- No automated test suite ships with this submission — the six required scenarios were hand-checked and work, but nothing catches a future change that breaks them.
+- Old sessions loaded from the spreadsheet have no "when was this created" history (the original file never recorded it) — only the ones with a real cancellation timestamp get one history row. Every session created from now on gets a full history.
 
 ### Where my AI assistant helped
 
-- Wrote the `EXCLUDE USING gist` constraints — including the `status <> 'cancelled'` predicate, needed because a no-show must keep occupying its slot — and the hand-written `schema.sql` migration.
-- Worked through the tutor/room vs. student overlap design fork and implemented it: denormalizing `lesson_student` so all three dimensions get the same DB-level guarantee, instead of a weaker application-level check for students only.
-- Wrote the seed loader: parses both CSVs, merges `L009`+`L010` into one `exam_pair` lesson via a heuristic (same tutor, room, and start time, with a note mentioning "exam pair"), inserts each lesson in its own transaction, and — when the exclusion constraint rejects a row (`23P01`) — catches it, records it in `legacy_conflict` with the reason and the raw CSV row, and keeps going instead of crashing or silently skipping it.
-- Built the layered API (routes → controllers → services → repositories) and the `23P01` → `409` error mapping.
-- Caught and fixed a real design mistake before it shipped: the live API originally took `studentNames` and resolved-or-created a student by matching text, which would silently merge two different people who share a name. Moved to `studentId` end-to-end for the live API and deleted the name-matching code from it — the heuristic now only exists inside the seed script.
+- Wrote the database-level block on double-booking (including making sure a no-show doesn't count as freeing up the slot) and the hand-written database setup file.
+- Worked through how to block student double-booking specifically (duplicating the time range so it could be blocked at all, instead of a weaker application-side check) and wrote that part.
+- Wrote the loader for the old spreadsheet: how to tell that two rows are one exam-pair session, and how to report a row that breaks a rule.
+- Wrote the API (create/move/cancel/no-show/history) and how to turn a database conflict into the right kind of error.
+- Caught and fixed a real design mistake before submitting: the API originally took a student's name and tried to find-or-create them by that name — risky if two people share a name. Fixed to only take an existing student id instead.
 
 ### A suggestion I threw away
 
-My AI assistant wrote a complete Vitest + supertest suite covering all six required scenarios, and it passed 6/6 against the seeded database. I had it deleted before submitting — not because it was wrong, but because the brief is explicit that I should "submit only code you understand and could have written yourself," and a test I didn't write isn't one I can defend line-by-line in the interview. I used its passing run to confirm the feature actually works, then write my own test suite separately.
+The stack originally picked Prisma (an ORM) for the whole database layer. I switched the double-booking block over to plain `pg` (hand-written SQL) instead, because of a race condition: blocking a double-booking for real means "check for a clash" and "write the row" have to be **one single action the database itself guarantees** (an EXCLUDE constraint, checked at the moment of the write). Checking through application code via an ORM — read the data, compare it yourself, then write — leaves a gap: two requests at the same time can each read "no clash yet" before the other one finishes writing. Prisma also can't declare an EXCLUDE constraint at all, so keeping it would still mean hand-writing SQL for the one part that matters most — none of the ORM's benefit would be left there anyway. I was right, because the promise "the system won't allow a double-booking" has to live in the database to actually hold, not in code that only checks before it writes.
