@@ -50,7 +50,33 @@ Time used: __h__m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
 
 ## 2. What to build
 
-*(pending — Phase 02)*
+### Features this tool needs
+
+| # | Feature | Who hurts | Why it can wait |
+|---|---|---|---|
+| 1 | **Conflict-safe lesson booking** (create/move blocked by the database on a tutor/room/student clash; cancel/no-show to prove slots free correctly) | Owner — *"if the system allows it, the system is broken"*; tutor double-booked on 2026-03-10 (finding C) | — (this is the one) |
+| 2 | Change-aware daily schedule (diff against what was published at the 16:00 cut-off) | Tutor — *"I do not always know which one is real"* | Needs a correct lesson/event model first — built by #1 |
+| 3 | Full cancellation flow with real billing (late fee charged, tutor paid) | Mai — *"Cancellations are the worst part"* | No real billing data exists; #1 already covers enough cancel behaviour to prove a slot frees |
+| 4 | Tutor daily load cap (≤6), enforced or overridable | Owner wants it enforced, but T1 already has **7 bookings on 2026-03-06** | Needs an owner decision first (Q3, Phase 1) — hard-block vs override |
+| 5 | "See today" board — one screen the owner can open | Owner — *"I want to open the laptop and see today. Not scroll. See it."* | Read-only view — doesn't make any rule harder to break, just faster than the spreadsheet |
+| 6 | Freed-slot notification / waitlist on cancel | Mai — *"tries to remember to tell the tutor's next family that a slot has opened up"* | No waitlist data; out of scope for 2h30 |
+| 7 | Spreadsheet import (seed loader + violation report) | Needed because Mai *"goes on leave in eight weeks"* and is the only one who understands the sheet | Not "the one feature" — it's the precondition for demonstrating any of the others |
+
+### The one I build: Conflict-safe lesson booking
+
+1. The owner sets the highest bar for it: *"That can never happen again — if the system allows it, the system is broken."* Every other feature is "nice"; this one is "must."
+2. The data proves it's already happening: finding A (student booked in two places at once) and C (tutor teaching in two rooms at once) both occur within the one week of export — not a hypothetical.
+3. This is something the spreadsheet + WhatsApp cannot do **by nature** — "see today" (#5) and a smoother cancellation UI (#3) the spreadsheet can still do, just slower; a database-level exclusion is a difference in kind, not speed.
+4. It fits inside 2h30: one exclusion constraint set + the seed loader (required regardless) + 4 endpoints (create/move/cancel/no-show) + a handful of tests. Demonstrable directly against real data: re-POST L008 → `409`.
+5. The data model behind it (`lesson`, `lesson_student`, `lesson_event`) is the foundation every other feature (#2, #3, #4) would need — choosing it means choosing the right schema before anything else gets built.
+
+### What I leave broken
+
+- Tutors still get their day via a message Mai types by hand — *"which message is real"* (tutor) is **not solved**; only the data model (`lesson_event`) is prepared so feature #2 could be built on top without a schema change.
+- **Cap 6/tutor/day and closed-on-Monday: not enforced, not even warned in the API.** The seed report shows they are broken today (T1 has 7 bookings on 2026-03-06, L032 runs on Monday) — they need an owner decision first (Q3, Q4 in Phase 1) before choosing hard-block vs override.
+- **Late-cancel classification and billing (`late`, `chargeFamily`, `payTutor`): cut entirely from the API.** Cancel only sets `status`, `cancelledAt`, and writes the event.
+- Waitlist / freed-slot notification: untouched.
+- The "see today" board the owner explicitly asked for: not built. There's a `GET /lessons?date=` returning raw JSON — deliberately not called "schedule" so it doesn't slide into feature #5.
 
 ## 3. Design
 
