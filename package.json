@@ -10,10 +10,9 @@
   "scripts": {
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "migrate": "docker compose exec -T postgres psql -U postgres -d tutoring_scheduling -f - < db/schema.sql",
+    "migrate": "docker compose exec -T postgres psql -U postgres -d bright_path_learning -f - < db/schema.sql",
     "seed": "tsx src/seed/index.ts",
     "dev": "tsx watch src/server.ts",
-    "test": "vitest run",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,6 +1,15 @@
 import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import * as lessonService from '../services/lesson-service';
+import { NotFoundError } from '../lib/errors';
+
+const lessonIdSchema = z.string().uuid();
+
+function lessonId(raw: string): string {
+  const parsed = lessonIdSchema.safeParse(raw);
+  if (!parsed.success) throw new NotFoundError();
+  return parsed.data;
+}
 
 const createLessonSchema = z
   .object({
@@ -47,7 +56,7 @@ const moveLessonSchema = z
 export async function move(req: Request, res: Response, next: NextFunction) {
   try {
     const body = moveLessonSchema.parse(req.body ?? {});
-    const result = await lessonService.moveLesson(req.params.id!, {
+    const result = await lessonService.moveLesson(lessonId(req.params.id!), {
       tutorId: body.tutorId,
       roomId: body.roomId,
       startsAt: body.startsAt ? new Date(body.startsAt) : undefined,
@@ -61,7 +70,7 @@ export async function move(req: Request, res: Response, next: NextFunction) {
 
 export async function cancel(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await lessonService.cancelLesson(req.params.id!);
+    const result = await lessonService.cancelLesson(lessonId(req.params.id!));
     res.status(200).json(result);
   } catch (err) {
     next(err);
@@ -70,7 +79,7 @@ export async function cancel(req: Request, res: Response, next: NextFunction) {
 
 export async function noShow(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await lessonService.noShowLesson(req.params.id!);
+    const result = await lessonService.noShowLesson(lessonId(req.params.id!));
     res.status(200).json(result);
   } catch (err) {
     next(err);
@@ -79,7 +88,7 @@ export async function noShow(req: Request, res: Response, next: NextFunction) {
 
 export async function history(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await lessonService.getLessonHistory(req.params.id!);
+    const result = await lessonService.getLessonHistory(lessonId(req.params.id!));
     res.status(200).json(result);
   } catch (err) {
     next(err);
