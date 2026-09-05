@@ -1,6 +1,6 @@
 # DECISIONS
 
-Time used: 2h30m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
+Time used: ~1h41m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
 
 ## 1. Reading the situation
 
