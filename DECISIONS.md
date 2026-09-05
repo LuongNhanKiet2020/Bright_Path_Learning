@@ -76,11 +76,91 @@ Time used: __h__m · Today pinned to 2026-03-05 · Stack: Node/TS + PostgreSQL
 - **Cap 6/tutor/day and closed-on-Monday: not enforced, not even warned in the API.** The seed report shows they are broken today (T1 has 7 bookings on 2026-03-06, L032 runs on Monday) — they need an owner decision first (Q3, Q4 in Phase 1) before choosing hard-block vs override.
 - **Late-cancel classification and billing (`late`, `chargeFamily`, `payTutor`): cut entirely from the API.** Cancel only sets `status`, `cancelledAt`, and writes the event.
 - Waitlist / freed-slot notification: untouched.
-- The "see today" board the owner explicitly asked for: not built. There's a `GET /lessons?date=` returning raw JSON — deliberately not called "schedule" so it doesn't slide into feature #5.
+- The "see today" board the owner explicitly asked for: not built. There's a `GET /lessons/:id/history` for one lesson's own timeline, not a whole-day view — deliberately not a "schedule" endpoint so it doesn't slide into feature #5.
 
 ## 3. Design
 
-*(pending — Phase 03)*
+### Data model
+
+```
+tutor          (id text PK,               -- natural key from tutors.csv ("T1", "T2", ...)
+                name, subject, phone)
+
+room           (id text PK,               -- "R1".."R6" — seeded even though the export only uses R1-R3
+                name)
+
+student        (id uuid PK,               -- no student id in the export; app generates one, dedupes by name
+                name text UNIQUE)
+
+lesson         (id uuid PK,
+                tutor_id FK, room_id FK,
+                starts_at timestamptz, ends_at timestamptz,
+                kind      enum('single','exam_pair'),
+                status    enum('booked','cancelled','no_show'),
+                cancelled_at timestamptz NULL,
+                note text NULL,
+                legacy_ref text UNIQUE NULL,   -- "L001".. for seeded rows, NULL for API-created lessons
+                created_at, updated_at)
+
+lesson_student (lesson_id FK, student_id FK, PK(lesson_id, student_id),
+                starts_at, ends_at, status)   -- denormalized copy of lesson's own columns — see below
+
+lesson_event   (id PK, lesson_id FK, occurred_at timestamptz,
+                type enum('created','moved','cancelled','no_show'),
+                before jsonb NULL, after jsonb, after_cutoff boolean, actor text)
+
+legacy_conflict (id PK, legacy_ref text, reason text, raw_row jsonb, created_at)
+                -- export rows the exclusion constraints rejected at seed time; report-only, no API reads this
+```
+
+`lesson_student` carries its own copy of `starts_at/ends_at/status` because a Postgres `EXCLUDE` constraint needs the range column on the same table as the column it excludes on, and `student_id` only exists on `lesson_student` — `starts_at/ends_at` live on `lesson`. The app keeps the copy in sync on every `create`/`move`/`cancel`/`no-show`, inside the same transaction as the write to `lesson`. This is a real weakness (two sources of truth for one time range) — see Reflection.
+
+The exclusion predicate on all three constraints is `WHERE (status <> 'cancelled')`, not `status = 'booked'`. The brief is explicit that a no-show "frees neither" the room nor the slot — only a cancellation does — so a no-show lesson must still count as occupying its tutor/room/student for conflict purposes.
+
+### How a cancel/move after the tutor was told is represented
+
+`lesson` always holds the *current* state — there is no `DELETE`, and `starts_at`/`room_id`/`tutor_id` are never updated directly except through `move`. Every `create`/`move`/`cancel`/`no-show` appends one `lesson_event` row (`before`/`after` snapshots, `occurred_at`, `actor`) computed via the pinned `now()` — never `new Date()`. `after_cutoff` is `occurred_at > cutoff(lesson.starts_at)`, where `cutoff(D) = (D − 1 day) 16:00 +07:00`.
+
+The export itself has no `created_at`, so seeding does **not** fabricate a `created` event for the 31 historical rows — there is no honest timestamp to give it. The two rows that do carry a real historical timestamp (`cancelled_at` on L005 and L017) get one real `cancelled` event each at seed time, computed the same way a live cancel would be. From the first API call onward, every lesson has a full, real event trail — this is exactly the gap the brief's "how you represent a booking cancelled/moved after the tutor was told" question is pointing at, and `lesson_event` is built to close it going forward without a schema change (the basis for the change-aware schedule feature named in "next week").
+
+### Rules: database vs code
+
+| Rule | Where | Why |
+|---|---|---|
+| Tutor can't be in two places at once | **DB** — `EXCLUDE USING gist (tutor_id WITH =, tstzrange(starts_at,ends_at) WITH &&) WHERE (status <> 'cancelled')` | Race-safe between two concurrent requests; this is exactly what the spreadsheet can't do |
+| Room holds one lesson at a time | **DB** — same shape, on `room_id` | Same reasoning |
+| Student can't be in two places at once | **DB** — same shape, on `lesson_student.student_id`, against the denormalized range copy | The owner's #1 complaint; enforced with the same strength as tutor/room, not weaker |
+| `ends_at > starts_at` | **DB CHECK** | Cheap, never changes |
+| No `DELETE`; `starts_at`/`room_id`/`tutor_id` only change via `move` | **Code** — the routes simply don't exist | Keeps history honest; could change without touching the schema |
+| `after_cutoff` on `lesson_event` | **Code**, computed from the pinned `now()` at write time | Depends on policy (`now()`, the 16:00 cut-off) rather than being a data invariant |
+| Cap 6/tutor/day, closed-on-Monday, late-cancel billing | **Nowhere in the API** — visible only in the seed report | Cut from scope in Phase 02: the real data already breaks both, and enforcing either needs an owner decision (Q3/Q4, Phase 1) this exercise doesn't have |
+
+### API
+
+```
+POST   /lessons                 { tutorId, roomId, startsAt, durationMin (60|90),
+                                   kind ('single'|'exam_pair'), studentNames: string[], note? }
+                                 → 201 { id, tutorId, roomId, startsAt, endsAt, kind, status, studentNames }
+                                 → 409 { error: "CONFLICT", reason: "tutor"|"room"|"student", clashingLessonId }
+
+POST   /lessons/:id/move        { tutorId?, roomId?, startsAt?, durationMin? }  (at least one field)
+                                 → 200 updated lesson | 409 same shape as above
+                                 → 400 { error: "INVALID_STATE" } if the lesson isn't currently 'booked'
+
+POST   /lessons/:id/cancel      → 200 { id, status: 'cancelled', cancelledAt, afterCutoff }
+                                 → 400 { error: "INVALID_STATE" } if not currently 'booked'
+
+POST   /lessons/:id/no-show     → 200 { id, status: 'no_show' }
+                                 → 400 { error: "INVALID_STATE" } if not currently 'booked'
+
+GET    /lessons/:id/history     → 200 [{ id, type, occurredAt, before, after, afterCutoff, actor }, ...]
+```
+
+Exactly these 5 — nothing else. `POST /lessons/:id/no-show` and `GET /lessons/:id/history` earn their place because the test list (and the design question above) can't be demonstrated without them; nothing else made the cut once cap-6/closed-Monday/late-cancel were cut from scope in Phase 02.
+
+### The endpoint I rejected: `PATCH /lessons/:id`
+
+A generic patch — "change any field on a lesson" — was the obvious alternative to separate `move`/`cancel`/`no-show` routes. Rejected because it can't tell a `move` apart from a `cancel` or a typo fix in `note`: the whole point of `lesson_event.type` is to say *what kind of change* happened, and a generic patch collapses that distinction back into "something changed," which is the exact complaint the tutor made about the spreadsheet ("I do not always know which one is real"). Naming the mutation (`move`, `cancel`, `no-show`) is what keeps the event log honest.
 
 ## 4. Reflection
 
