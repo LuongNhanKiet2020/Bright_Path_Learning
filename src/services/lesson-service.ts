@@ -5,7 +5,6 @@ import { InvalidStateError, NotFoundError } from '../lib/errors';
 import * as lessonRepo from '../repositories/lesson-repository';
 import * as eventRepo from '../repositories/lesson-event-repository';
 
-// Single-user tool (Mai) — no auth in scope, so every API call is attributed to her.
 const ACTOR = 'mai';
 
 export interface CreateLessonInput {
@@ -14,7 +13,7 @@ export interface CreateLessonInput {
   startsAt: Date;
   durationMin: number;
   kind: 'single' | 'exam_pair';
-  studentIds: string[]; // caller-supplied — the API never resolves a student by name
+  studentIds: string[];
   note: string | null;
 }
 

@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { pool } from '../lib/db';
 
-// No student id in the export, so the "identity" is the name — dedupe by exact,
-// case-sensitive match. Known weakness: two families with the same name collide.
 export async function getOrCreateByName(name: string): Promise<string> {
   const trimmed = name.trim();
   const existing = await pool.query<{ id: string }>('SELECT id FROM student WHERE name = $1', [trimmed]);
